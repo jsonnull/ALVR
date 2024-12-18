@@ -172,34 +172,41 @@ impl TrackingManager {
             let t = controllers.left_controller_position_offset;
             let r = controllers.left_controller_rotation_offset;
 
+            // NB: we are currently using non-standard order of transforms for the settings (we
+            // apply first position then orientation, while Pose uses the opposite convention).
+            // It is converted in here.
+            let left_orientation = Quat::from_euler(
+                EulerRot::XYZ,
+                r[0] * DEG_TO_RAD,
+                r[1] * DEG_TO_RAD,
+                r[2] * DEG_TO_RAD,
+            );
+            let left_position = Vec3::new(t[0], t[1], t[2]);
             device_motion_configs.insert(
                 *HAND_LEFT_ID,
                 MotionConfig {
                     pose_offset: Pose {
-                        orientation: Quat::from_euler(
-                            EulerRot::XYZ,
-                            r[0] * DEG_TO_RAD,
-                            r[1] * DEG_TO_RAD,
-                            r[2] * DEG_TO_RAD,
-                        ),
-                        position: Vec3::new(t[0], t[1], t[2]),
+                        orientation: left_orientation,
+                        position: left_orientation * left_position,
                     },
                     linear_velocity_cutoff: controllers.linear_velocity_cutoff,
                     angular_velocity_cutoff: controllers.angular_velocity_cutoff * DEG_TO_RAD,
                 },
             );
 
+            let right_orientation = Quat::from_euler(
+                EulerRot::XYZ,
+                r[0] * DEG_TO_RAD,
+                -r[1] * DEG_TO_RAD,
+                -r[2] * DEG_TO_RAD,
+            );
+            let right_position = Vec3::new(-t[0], t[1], t[2]);
             device_motion_configs.insert(
                 *HAND_RIGHT_ID,
                 MotionConfig {
                     pose_offset: Pose {
-                        orientation: Quat::from_euler(
-                            EulerRot::XYZ,
-                            r[0] * DEG_TO_RAD,
-                            -r[1] * DEG_TO_RAD,
-                            -r[2] * DEG_TO_RAD,
-                        ),
-                        position: Vec3::new(-t[0], t[1], t[2]),
+                        orientation: right_orientation,
+                        position: right_orientation * right_position,
                     },
                     linear_velocity_cutoff: controllers.linear_velocity_cutoff,
                     angular_velocity_cutoff: controllers.angular_velocity_cutoff * DEG_TO_RAD,
@@ -214,18 +221,19 @@ impl TrackingManager {
             }
 
             if let Some(config) = device_motion_configs.get(&device_id) {
+                let original_motion = motion;
+
                 // Recenter
-                motion = self.recenter_motion(motion);
+                motion = self.recenter_motion(original_motion);
 
                 // Apply custom transform
-                motion.pose.orientation *= config.pose_offset.orientation;
-                motion.pose.position += motion.pose.orientation * config.pose_offset.position;
-
-                motion.linear_velocity += motion
-                    .angular_velocity
-                    .cross(motion.pose.orientation * config.pose_offset.position);
-                motion.angular_velocity =
-                    motion.pose.orientation.conjugate() * motion.angular_velocity;
+                motion.pose = motion.pose * config.pose_offset;
+                // NB: for linear and angular velocity we need to fix it with an extensive refactoring,
+                // making platform-specific offsets on the client side, checking correctness by drawing
+                // velocity vectors in the lobby.
+                // SteamVR requires specific fixes because apparently it uses a different frame of reference
+                // for prediction, and possibly it applies rotation/translation in a different order.
+                // This must be fixed before merging the tracking rewrite.
 
                 fn cutoff(v: Vec3, threshold: f32) -> Vec3 {
                     if v.length_squared() > threshold * threshold {
